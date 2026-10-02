@@ -1,0 +1,39 @@
+{
+    "$schema": "node_modules/wrangler/config-schema.json",
+    "name": "lights-on-14th-listen-sync",
+    "main": "src/worker/index.ts",
+    "compatibility_date": "2026-06-01",
+    "assets": {
+        "directory": "./public",
+        "binding": "ASSETS"
+    },
+    "durable_objects": {
+        "bindings": [
+            {
+                "name": "SHOW",
+                "class_name": "Show"
+            }
+        ]
+    },
+    "migrations": [
+        {
+            "tag": "v1",
+            "new_sqlite_classes": [ "Show" ]
+        }
+    ],
+    "r2_buckets": [
+        {
+            "binding": "MEDIA",
+            "bucket_name": "lights-on-14th-listen-media"
+        }
+    ],
+    "routes": [
+        {
+            "pattern": "listen.lightson14th.com",
+            "custom_domain": true
+        }
+    ],
+    "observability": {
+        "enabled": true
+    }
+}

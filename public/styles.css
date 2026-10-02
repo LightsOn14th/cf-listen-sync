@@ -1,0 +1,141 @@
+:root {
+    --bg: #f6f4ef;
+    --surface: #ffffff;
+    --text: #1d1f22;
+    --muted: #5b6168;
+    --border: #d9d6cf;
+    --accent: #b3261e;
+    --accent-text: #ffffff;
+    --focus: #1f6feb;
+}
+
+@media ( prefers-color-scheme: dark ) {
+    :root:not( [data-theme="light"] ) {
+        --bg: #0f1214;
+        --surface: #181c1f;
+        --text: #eceff1;
+        --muted: #9aa3ab;
+        --border: #2c3236;
+        --accent: #e5534b;
+        --accent-text: #0f1214;
+        --focus: #58a6ff;
+    }
+}
+
+:root[data-theme="dark"] {
+    --bg: #0f1214;
+    --surface: #181c1f;
+    --text: #eceff1;
+    --muted: #9aa3ab;
+    --border: #2c3236;
+    --accent: #e5534b;
+    --accent-text: #0f1214;
+    --focus: #58a6ff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var( --bg );
+    color: var( --text );
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+main {
+    max-width: 30rem;
+    margin: 0 auto;
+    padding: 2rem 1rem 3rem;
+}
+
+h1 {
+    margin: 0;
+    font-size: 1.75rem;
+}
+
+.lede {
+    margin: 0.25rem 0 1.5rem;
+    color: var( --muted );
+}
+
+button {
+    min-height: 2.75rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid var( --border );
+    border-radius: 0.5rem;
+    background: var( --surface );
+    color: var( --text );
+    font: inherit;
+    cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible {
+    outline: 2px solid var( --focus );
+    outline-offset: 2px;
+}
+
+button.primary {
+    width: 100%;
+    min-height: 3.5rem;
+    border: 0;
+    background: var( --accent );
+    color: var( --accent-text );
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+
+.status {
+    margin: 1rem 0 0;
+    font-weight: 600;
+}
+
+.now-playing {
+    min-height: 1.5em;
+    margin: 0.25rem 0 1.5rem;
+    color: var( --muted );
+}
+
+.offset {
+    padding: 1rem;
+    border: 1px solid var( --border );
+    border-radius: 0.5rem;
+    background: var( --surface );
+}
+
+.offset-header {
+    display: flex;
+    justify-content: space-between;
+    font-weight: 600;
+}
+
+.offset input[type="range"] {
+    width: 100%;
+    margin: 0.75rem 0;
+    accent-color: var( --accent );
+}
+
+.offset-buttons {
+    display: grid;
+    grid-template-columns: repeat( 3, 1fr );
+    gap: 0.5rem;
+}
+
+.hint {
+    margin: 0.75rem 0 0;
+    color: var( --muted );
+    font-size: 0.875rem;
+}
+
+.diagnostics {
+    margin-top: 1.5rem;
+    color: var( --muted );
+}
+
+.diagnostics pre {
+    margin: 0.5rem 0 0;
+    white-space: pre-wrap;
+    font-size: 0.875rem;
+}

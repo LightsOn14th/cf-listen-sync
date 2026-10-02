@@ -1,0 +1,14 @@
+{
+    "compilerOptions": {
+        "target": "es2020",
+        "module": "es2022",
+        "moduleResolution": "bundler",
+        "lib": [ "es2023", "dom", "dom.iterable" ],
+        "types": [],
+        "strict": true,
+        "noEmit": true,
+        "skipLibCheck": true,
+        "isolatedModules": true
+    },
+    "include": [ "src/client/**/*.ts", "src/shared/**/*.ts", "test/**/*.ts" ]
+}

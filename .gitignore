@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.dev.vars
+public/client.js
+public/client.js.map
+public/page.js
+public/page.js.map

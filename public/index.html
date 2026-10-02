@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Lights On 14th Audio</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='6' fill='%23b3261e'/%3E%3C/svg%3E">
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/page.js"></script>
+</head>
+<body>
+    <main>
+        <h1>Lights On 14th</h1>
+        <p class="lede">Show audio, in sync with the lights.</p>
+
+        <button id="toggle" class="primary" type="button" aria-pressed="false">Listen</button>
+
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+        <p id="now-playing" class="now-playing"></p>
+
+        <section class="offset" aria-labelledby="offset-label">
+            <div class="offset-header">
+                <label id="offset-label" for="offset">Audio offset</label>
+                <output id="offset-value" for="offset">0 ms</output>
+            </div>
+            <input id="offset" type="range" min="-500" max="500" step="10" value="0">
+            <div class="offset-buttons">
+                <button id="offset-down" type="button">-10 ms</button>
+                <button id="offset-reset" type="button">Reset</button>
+                <button id="offset-up" type="button">+10 ms</button>
+            </div>
+            <p class="hint">Raise the offset if the audio is ahead of the lights, lower it if the audio is behind. Bluetooth speakers and car audio usually need +100 to +300 ms.</p>
+        </section>
+
+        <details class="diagnostics">
+            <summary>Diagnostics</summary>
+            <pre id="diagnostics-values">-</pre>
+        </details>
+    </main>
+</body>
+</html>
