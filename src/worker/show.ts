@@ -9,9 +9,32 @@ import {
     type RelayMessage,
     type ShowState,
 } from '../shared/protocol'
+import {
+    SHOW_TIME_ZONE,
+    deviceFromUserAgent,
+    localDate,
+    minuteTimeline,
+    sanitizeClientId,
+    sessionEnd,
+    songStats,
+    summarizeDate,
+    summarizeDates,
+    type PlayRow,
+    type SessionRow,
+} from './listeners'
 
 const PLUGIN_TAG = 'fpp'
 const LISTENER_TAG = 'listener'
+
+// Admin app connections: served like any listener, left out of the counts
+// and the analytics.
+const ADMIN_TAG = 'admin'
+
+// How often a listener's last-seen time is written while it stays connected.
+const LISTENER_TOUCH_MS = 60_000
+
+// Listener analytics older than this are deleted.
+const ANALYTICS_RETENTION_MS = 400 * 24 * 60 * 60 * 1000
 
 // How long the plugin may be silent before its socket is treated as dead.
 const PLUGIN_SILENCE_MS = 30_000
@@ -33,6 +56,11 @@ interface PersistedShow {
 
 interface PluginAttachment {
     lastSeen: number
+}
+
+interface ListenerAttachment {
+    sessionId: number | null
+    lastWrite: number
 }
 
 /**
@@ -75,7 +103,56 @@ export class Show extends DurableObject<Env> {
             const versions = await ctx.storage.get<Record<string, string>>( 'versions' )
 
             this.versions = new Map( Object.entries( versions ?? {} ) )
+
+            this.setUpAnalytics()
         } )
+    }
+
+    /**
+     * Create the analytics tables, close sessions left open by a restart, and
+     * delete old rows.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    private setUpAnalytics(): void {
+        const sql = this.ctx.storage.sql
+
+        sql.exec( `CREATE TABLE IF NOT EXISTS listener_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT,
+            device TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            last_seen INTEGER NOT NULL,
+            ended_at INTEGER
+        )` )
+        sql.exec( 'CREATE INDEX IF NOT EXISTS listener_sessions_started ON listener_sessions ( started_at )' )
+        sql.exec( `CREATE TABLE IF NOT EXISTS media_plays (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file TEXT NOT NULL,
+            playlist TEXT,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER
+        )` )
+        sql.exec( 'CREATE INDEX IF NOT EXISTS media_plays_started ON media_plays ( started_at )' )
+
+        // Sockets that survived hibernation keep their sessions open.
+        const live = new Set(
+            this.ctx.getWebSockets( LISTENER_TAG )
+                .map( ( ws ) => ( ws.deserializeAttachment() as ListenerAttachment | null )?.sessionId )
+                .filter( ( id ): id is number => typeof id === 'number' )
+        )
+        const open = sql.exec<{ id: number }>( 'SELECT id FROM listener_sessions WHERE ended_at IS NULL' ).toArray()
+
+        for ( const { id } of open ) {
+            if ( ! live.has( id ) ) {
+                sql.exec( 'UPDATE listener_sessions SET ended_at = last_seen WHERE id = ?', id )
+            }
+        }
+
+        const cutoff = Date.now() - ANALYTICS_RETENTION_MS
+
+        sql.exec( 'DELETE FROM listener_sessions WHERE started_at < ?', cutoff )
+        sql.exec( 'DELETE FROM media_plays WHERE started_at < ?', cutoff )
     }
 
     /**
@@ -88,7 +165,8 @@ export class Show extends DurableObject<Env> {
      * @return {Promise<Response>}
      */
     async fetch( request: Request ): Promise<Response> {
-        const isPlugin = new URL( request.url ).pathname === '/fpp'
+        const url = new URL( request.url )
+        const isPlugin = url.pathname === '/fpp'
 
         if ( ! isPlugin && this.ctx.getWebSockets( LISTENER_TAG ).length >= MAX_LISTENERS ) {
             return new Response( 'Too many listeners', { status: 503 } )
@@ -108,8 +186,21 @@ export class Show extends DurableObject<Env> {
             this.lostSourceAt = null
             await this.persist()
             await this.ctx.storage.setAlarm( Date.now() + PLUGIN_SILENCE_MS )
+        } else if ( url.searchParams.get( 'app' ) === 'admin' ) {
+            this.ctx.acceptWebSocket( server, [ LISTENER_TAG, ADMIN_TAG ] )
+            server.serializeAttachment( { sessionId: null, lastWrite: Date.now() } satisfies ListenerAttachment )
         } else {
+            const now = Date.now()
+            const row = this.ctx.storage.sql.exec<{ id: number }>(
+                'INSERT INTO listener_sessions ( client_id, device, started_at, last_seen ) VALUES ( ?, ?, ?, ? ) RETURNING id',
+                sanitizeClientId( url.searchParams.get( 'cid' ) ),
+                deviceFromUserAgent( request.headers.get( 'User-Agent' ) ),
+                now,
+                now
+            ).one()
+
             this.ctx.acceptWebSocket( server, [ LISTENER_TAG ] )
+            server.serializeAttachment( { sessionId: row.id, lastWrite: now } satisfies ListenerAttachment )
         }
 
         this.send( server, { type: 'hello', protocol: PROTOCOL_VERSION, show: this.snapshot() } )
@@ -152,6 +243,8 @@ export class Show extends DurableObject<Env> {
                 this.send( ws, { type: 'pong', id: Number( message.id ) || 0, t0: message.t0, ts: now } )
             }
 
+            this.touchListener( ws, now )
+
             return
         }
 
@@ -190,6 +283,8 @@ export class Show extends DurableObject<Env> {
         this.closeQuietly( ws, code === 1005 ? 1000 : code, 'Closed' )
 
         if ( ! this.ctx.getTags( ws ).includes( PLUGIN_TAG ) ) {
+            this.endListener( ws )
+
             return
         }
 
@@ -249,6 +344,7 @@ export class Show extends DurableObject<Env> {
             this.state = 'stopped'
             this.currentFile = null
             this.sample = null
+            this.recordPlay( null )
             await this.persist()
             this.broadcast( { type: 'show', show: this.snapshot() } )
         }
@@ -292,7 +388,138 @@ export class Show extends DurableObject<Env> {
      * @return {Promise<ShowState & { listeners: number }>}
      */
     async getState(): Promise<ShowState & { listeners: number }> {
-        return { ...this.snapshot(), listeners: this.ctx.getWebSockets( LISTENER_TAG ).length }
+        return { ...this.snapshot(), listeners: this.publicListenerCount() }
+    }
+
+    /**
+     * Listeners connected now, and today's figures so far.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    async getLiveListeners() {
+        const now = Date.now()
+        const today = localDate( now )
+        const sessions = this.sessionsBetween( now - 36 * 60 * 60 * 1000, now + 1 ).filter( ( session ) => localDate( session.started_at ) === today )
+        const open = sessions.filter( ( session ) => session.ended_at === null )
+
+        return {
+            at: now,
+            listeners: this.publicListenerCount(),
+            adminListeners: this.ctx.getWebSockets( ADMIN_TAG ).length,
+            current: this.currentFile,
+            playlist: this.playlist?.name ?? null,
+            sessions: open
+                .map( ( session ) => ( { device: session.device, startedAt: session.started_at, durationMs: now - session.started_at } ) )
+                .sort( ( a, b ) => a.startedAt - b.startedAt ),
+            today: sessions.length > 0 ? summarizeDate( today, sessions, now ) : null,
+        }
+    }
+
+    /**
+     * A summary per show date for the last `days` days, newest first.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    async getListenerHistory( days: number ) {
+        const now = Date.now()
+        const span = Math.min( Math.max( Math.round( days ) || 0, 1 ), 400 ) * 24 * 60 * 60 * 1000
+
+        return { timeZone: SHOW_TIME_ZONE, dates: summarizeDates( this.sessionsBetween( now - span, now + 1 ), now ) }
+    }
+
+    /**
+     * One show date: summary, listeners per minute, and listeners per song.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    async getListenerDate( date: string ) {
+        const now = Date.now()
+        const midnightUtc = Date.parse( `${ date }T00:00:00Z` )
+
+        if ( ! Number.isFinite( midnightUtc ) ) {
+            return null
+        }
+
+        // Sessions are grouped by show-local date; widen the query window by a
+        // day either side and filter.
+        const sessions = this.sessionsBetween( midnightUtc - 86_400_000, midnightUtc + 2 * 86_400_000 )
+            .filter( ( session ) => localDate( session.started_at ) === date )
+
+        if ( sessions.length === 0 ) {
+            return null
+        }
+
+        const summary = summarizeDate( date, sessions, now )
+        const plays = this.ctx.storage.sql.exec<PlayRow>(
+            'SELECT file, playlist, started_at, ended_at FROM media_plays WHERE started_at < ? AND COALESCE( ended_at, ? ) > ? ORDER BY started_at',
+            summary.lastAt,
+            now,
+            summary.firstAt
+        ).toArray()
+
+        return {
+            summary,
+            timeline: minuteTimeline( sessions, summary.firstAt, summary.lastAt, now ),
+            songs: songStats( plays, sessions, now ),
+            durations: sessions.map( ( session ) => sessionEnd( session, now ) - session.started_at ),
+        }
+    }
+
+    private publicListenerCount(): number {
+        return this.ctx.getWebSockets( LISTENER_TAG ).length - this.ctx.getWebSockets( ADMIN_TAG ).length
+    }
+
+    private sessionsBetween( from: number, to: number ): SessionRow[] {
+        return this.ctx.storage.sql.exec<SessionRow>(
+            'SELECT id, client_id, device, started_at, last_seen, ended_at FROM listener_sessions WHERE started_at >= ? AND started_at < ? ORDER BY started_at',
+            from,
+            to
+        ).toArray()
+    }
+
+    /**
+     * Keep an open session's last-seen time current, at most once a minute,
+     * so a session cut off by a restart ends close to when it really did.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    private touchListener( ws: WebSocket, now: number ): void {
+        const attachment = ws.deserializeAttachment() as ListenerAttachment | null
+
+        if ( ! attachment?.sessionId || now - attachment.lastWrite < LISTENER_TOUCH_MS ) {
+            return
+        }
+
+        this.ctx.storage.sql.exec( 'UPDATE listener_sessions SET last_seen = ? WHERE id = ?', now, attachment.sessionId )
+        ws.serializeAttachment( { ...attachment, lastWrite: now } satisfies ListenerAttachment )
+    }
+
+    private endListener( ws: WebSocket ): void {
+        const attachment = ws.deserializeAttachment() as ListenerAttachment | null
+
+        if ( ! attachment?.sessionId ) {
+            return
+        }
+
+        const now = Date.now()
+
+        this.ctx.storage.sql.exec( 'UPDATE listener_sessions SET ended_at = ?, last_seen = ? WHERE id = ? AND ended_at IS NULL', now, now, attachment.sessionId )
+    }
+
+    /**
+     * Close the open song play and start a new one when a file is playing.
+     *
+     * @since  [NEXT_VERSION]
+     */
+    private recordPlay( file: string | null ): void {
+        const now = Date.now()
+        const sql = this.ctx.storage.sql
+
+        sql.exec( 'UPDATE media_plays SET ended_at = ? WHERE ended_at IS NULL', now )
+
+        if ( file ) {
+            sql.exec( 'INSERT INTO media_plays ( file, playlist, started_at ) VALUES ( ?, ?, ? )', file, this.playlist?.name ?? null, now )
+        }
     }
 
     private async onMedia( message: Extract<PluginMessage, { type: 'media' }> ): Promise<void> {
@@ -305,6 +532,10 @@ export class Show extends DurableObject<Env> {
 
         const nextFile = state === 'playing' ? file : null
         const changed = state !== this.state || nextFile !== this.currentFile
+
+        if ( nextFile !== this.currentFile ) {
+            this.recordPlay( nextFile )
+        }
 
         this.state = state
         this.currentFile = nextFile

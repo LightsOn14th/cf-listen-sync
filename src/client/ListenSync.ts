@@ -31,6 +31,36 @@ export interface ListenSyncOptions {
     maxErrorMs?: number
     /** Title for the lock screen / media controls. */
     titleFor?: ( ref: MediaRef ) => string
+    /**
+     * Connecting app. `admin` connections are left out of the listener count
+     * and the listener analytics.
+     */
+    app?: 'listen' | 'admin'
+}
+
+const CLIENT_ID_KEY = 'listen-sync-client-id'
+
+/**
+ * Anonymous random id kept in this browser, so listener analytics can count
+ * returning listeners and reconnects once. Not linked to anything else.
+ *
+ * @since  [NEXT_VERSION]
+ *
+ * @return {string|null}
+ */
+const getClientId = (): string | null => {
+    try {
+        let id = localStorage.getItem( CLIENT_ID_KEY )
+
+        if ( ! id ) {
+            id = crypto.randomUUID()
+            localStorage.setItem( CLIENT_ID_KEY, id )
+        }
+
+        return id
+    } catch {
+        return null
+    }
 }
 
 /**
@@ -89,6 +119,7 @@ const RECONNECT_MAX_MS = 10_000
  */
 export class ListenSync extends EventTarget {
     private readonly relayUrl: string
+    private readonly app: 'listen' | 'admin'
     private readonly leadMs: number
     private readonly maxErrorS: number
     private readonly titleFor: ( ref: MediaRef ) => string
@@ -132,6 +163,7 @@ export class ListenSync extends EventTarget {
         super()
 
         this.relayUrl = options.relayUrl.replace( /\/+$/, '' )
+        this.app = options.app ?? 'listen'
         this.offsetMs = options.offsetMs ?? 0
         this.leadMs = options.leadMs ?? 60
         this.maxErrorS = ( options.maxErrorMs ?? 20 ) / 1000
@@ -283,7 +315,17 @@ export class ListenSync extends EventTarget {
     }
 
     private connect(): void {
-        const url = this.relayUrl.replace( /^http/, 'ws' ) + '/ws'
+        const params = new URLSearchParams()
+        const clientId = getClientId()
+
+        if ( this.app === 'admin' ) {
+            params.set( 'app', 'admin' )
+        } else if ( clientId ) {
+            params.set( 'cid', clientId )
+        }
+
+        const query = params.toString()
+        const url = this.relayUrl.replace( /^http/, 'ws' ) + '/ws' + ( query ? `?${ query }` : '' )
         const socket = new WebSocket( url )
 
         this.socket = socket
